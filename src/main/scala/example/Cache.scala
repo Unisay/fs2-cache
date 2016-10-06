@@ -1,8 +1,8 @@
 package example
 
 import fs2._
-import fs2.util.{Functor, Monad}
-
+import fs2.util._
+import fs2.util.syntax._
 import scala.language.higherKinds
 
 /**
@@ -45,11 +45,8 @@ object Cache {
   def mapAccumulateEval[F[_]: Monad,S,I,O](init: S)(f: (S,I) => F[(S,O)]): Pipe[F,I,(S,O)] =
   _.pull { handle =>
     handle.receive { case (chunk, h) =>
-      val monad: Monad[F] = implicitly[Monad[F]]
       val f2: (S, I) => F[(S, (S, O))] = (s: S, i: I) => {
-        monad.map(f(s, i)) {
-          case (newS, newO) => (newS, (newS, newO))
-        }
+        f(s, i) map { case (newS, newO) => (newS, (newS, newO)) }
       }
       val eval: Pull[F, (S, O), (S, Chunk[(S, O)])] = Pull.eval(chunkMapAccumulateEval(chunk)(init)(f2))
       eval.flatMap { case (s, _) => _mapAccumulateEval0(s)(f2)(h) }
@@ -66,8 +63,18 @@ object Cache {
 
   /** Simultaneously folds and maps this chunk, returning the output of the fold and the transformed chunk. */
   def chunkMapAccumulateEval[F[_]: Monad, S,B,A](chunk: Chunk[A])(s0: S)(f: (S,A) => F[(S,B)]): F[(S,Chunk[B])] = {
-    val monad = implicitly[Monad[F]]
-    ???
+    type BUF = collection.mutable.ArrayBuffer[B]
+    val buf = new collection.mutable.ArrayBuffer[B](chunk.size)
+    chunk.foldLeft(implicitly[Monad[F]].pure((s0, buf))) { (acc: F[(S, BUF)], a: A) =>
+      for {
+        t1 <- acc
+        (s, bf) = t1
+        t2 <- f(s, a)
+        (s1, b) = t2
+      } yield (s1, bf += b)
+    } map {
+      case (s, bf) => (s, Chunk.indexedSeq(bf))
+    }
   }
 
   def inMemory[K, V](fetch: K => Task[V]): Pipe[Task, K, V] = _

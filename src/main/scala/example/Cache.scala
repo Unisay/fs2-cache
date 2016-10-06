@@ -34,10 +34,6 @@ import scala.language.higherKinds
 
   ```
 
-  I tried to use `mapAccumulate(cache)(...)` but it works only with fetchers that return raw value (String) not Task[String]
-  Looks like what I need should be named `flatMapAccumulate`
-
-  Please advise
   */
 
 object Cache {
@@ -57,8 +53,11 @@ object Cache {
                                                     (f: (S,I) => F[(S,(S,O))])
                                                     (handle: Handle[F,I]): Pull[F,(S,O),Handle[F,I]] =
     handle.receive { case (chunk, h) =>
-      val eval: Pull[F, (S, O), (S, Chunk[(S, O)])] = Pull.eval(chunkMapAccumulateEval(chunk)(init)(f))
-      eval.flatMap { case (s, _) => _mapAccumulateEval0(s)(f)(h) }
+      Pull.eval(chunkMapAccumulateEval(chunk)(init)(f)).flatMap {
+        case (s, c) =>
+          // Pull.output(c) >> ???
+          _mapAccumulateEval0(s)(f)(h)
+      }
     }
 
   /** Simultaneously folds and maps this chunk, returning the output of the fold and the transformed chunk. */
@@ -85,5 +84,5 @@ object Cache {
           .getOrElse(fetch(k).map(value => (s.updated(k, value), value)))
         }
       }
-    .map(_._2)
+    .map { case (_, v) => v }
 }

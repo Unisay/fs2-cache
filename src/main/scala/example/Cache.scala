@@ -42,46 +42,41 @@ import scala.language.higherKinds
 
 object Cache {
 
-  def mapAccumulateEval[F[_]: Monad,S,I,O](init: S)(f: (S,I) => F[(S,O)]): Pipe[F,I,F[(S,O)]] =
+  def mapAccumulateEval[F[_]: Monad,S,I,O](init: S)(f: (S,I) => F[(S,O)]): Pipe[F,I,(S,O)] =
   _.pull { handle =>
     handle.receive { case (chunk, h) =>
       val monad: Monad[F] = implicitly[Monad[F]]
-      val f2 = (s: S, i: I) => {
+      val f2: (S, I) => F[(S, (S, O))] = (s: S, i: I) => {
         monad.map(f(s, i)) {
           case (newS, newO) => (newS, (newS, newO))
         }
       }
-      monad.flatMap(chunkMapAccumulateEval(chunk)(init)(f2)) {
-        case (s, o) => Pull.output(o) >> _mapAccumulateEval0(s)(f2)(h)
-      }
+      val eval: Pull[F, (S, O), (S, Chunk[(S, O)])] = Pull.eval(chunkMapAccumulateEval(chunk)(init)(f2))
+      eval.flatMap { case (s, _) => _mapAccumulateEval0(s)(f2)(h) }
     }
   }
 
-  private def _mapAccumulateEval0[F[_],S,I,O](init: S)(f: (S,I) => F[(S,(S,O))]): Handle[F,I] => Pull[F,(S,O),Handle[F,I]] =
-    _.receive { case (chunk, h) =>
-      val (s, o) = chunkMapAccumulateEval(chunk)(init)(f)
-      Pull.output(o) >> _mapAccumulateEval0(s)(f)(h)
+  private def _mapAccumulateEval0[F[_]: Monad,S,I,O](init: S)
+                                                    (f: (S,I) => F[(S,(S,O))])
+                                                    (handle: Handle[F,I]): Pull[F,(S,O),Handle[F,I]] =
+    handle.receive { case (chunk, h) =>
+      val eval: Pull[F, (S, O), (S, Chunk[(S, O)])] = Pull.eval(chunkMapAccumulateEval(chunk)(init)(f))
+      eval.flatMap { case (s, _) => _mapAccumulateEval0(s)(f)(h) }
     }
 
   /** Simultaneously folds and maps this chunk, returning the output of the fold and the transformed chunk. */
   def chunkMapAccumulateEval[F[_]: Monad, S,B,A](chunk: Chunk[A])(s0: S)(f: (S,A) => F[(S,B)]): F[(S,Chunk[B])] = {
-    val buf = new collection.mutable.ArrayBuffer[B](size)
-    var s = s0
-    for { c <- chunk.iterator } {
-      val (newS, newC) = f(s, c)
-      buf += newC
-      s = newS
-    }
-    (s, Chunk.indexedSeq(buf))
+    val monad = implicitly[Monad[F]]
+    ???
   }
 
   def inMemory[K, V](fetch: K => Task[V]): Pipe[Task, K, V] = _
     .through {
-      pipe.mapAccumulateEval(Map.empty[K, V]) { (s: Map[K, V], k: K) =>
+      mapAccumulateEval(Map.empty[K, V]) { (s: Map[K, V], k: K) =>
           s.get(k)
-          .map(v => Task.now((state, v)))
-          .getOrElse(fetch(k).map(value => (state.updated(k, value), value)))
+          .map(v => Task.now((s, v)))
+          .getOrElse(fetch(k).map(value => (s.updated(k, value), value)))
         }
       }
-
+    .map(_._2)
 }
